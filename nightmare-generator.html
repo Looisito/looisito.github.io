@@ -1,0 +1,994 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nightmare Generator</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #0a0a0a;
+            font-family: 'Courier New', monospace;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            color: #ddd;
+        }
+        
+        #container {
+            position: relative;
+            width: 800px;
+            height: 900px;
+            background: #0a0a0a;
+        }
+        
+        #imageCanvas {
+            display: block;
+            width: 800px;
+            height: 400px;
+        }
+        
+        #uiCanvas {
+            display: block;
+            width: 800px;
+            height: 500px;
+            cursor: default;
+        }
+        
+        #textInput {
+            position: absolute;
+            left: 30px;
+            bottom: 90px;
+            width: 740px;
+            height: 40px;
+            background: #1e1e28;
+            border: 2px solid #646478;
+            color: #fff;
+            font-size: 14px;
+            font-family: 'Courier New', monospace;
+            padding: 0 10px;
+            box-sizing: border-box;
+            border-radius: 5px;
+            outline: none;
+        }
+        
+        #textInput:focus {
+            border-color: #c83232;
+        }
+        
+        .hidden {
+            display: none !important;
+        }
+        
+        .button {
+            position: absolute;
+            padding: 8px 16px;
+            background: #641e1e;
+            border: 2px solid #963c3c;
+            color: #dcdcdc;
+            font-size: 14px;
+            font-family: 'Courier New', monospace;
+            cursor: pointer;
+            border-radius: 5px;
+            transition: all 0.2s;
+        }
+        
+        .button:hover {
+            background: #963232;
+            border-color: #c85050;
+        }
+        
+        #endGameBtn {
+            right: 20px;
+            bottom: 10px;
+        }
+        
+        #backBtn {
+            right: 20px;
+            bottom: 10px;
+        }
+        
+        #soundToggle {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            width: 50px;
+            height: 50px;
+            background: #641e1e;
+            border: 2px solid #963c3c;
+            color: #dcdcdc;
+            font-size: 24px;
+            cursor: pointer;
+            border-radius: 50%;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        #soundToggle:hover {
+            background: #963232;
+            border-color: #c85050;
+        }
+        
+        #soundToggle.muted {
+            background: #3c1e1e;
+            border-color: #5c2c2c;
+        }
+    </style>
+</head>
+<body>
+    <div id="container">
+        <canvas id="imageCanvas" width="800" height="400"></canvas>
+        <canvas id="uiCanvas" width="800" height="500"></canvas>
+        <input type="text" id="textInput" class="hidden" placeholder="Type here...">
+        <button id="endGameBtn" class="button hidden">End Game</button>
+        <button id="backBtn" class="button hidden">Back</button>
+        <button id="soundToggle" title="Toggle Sound">🔊</button>
+    </div>
+
+    <script>
+        // Configuration
+        let OPENAI_API_KEY = "";
+        const MODEL = "gpt-3.5-turbo";
+        const MAX_TOKENS = 400;
+        const OPENING_PROMPT = "You find yourself walking alone in a small town. A gloom hangs over the serene air.";
+        
+        // Canvas setup
+        const imageCanvas = document.getElementById('imageCanvas');
+        const uiCanvas = document.getElementById('uiCanvas');
+        const imgCtx = imageCanvas.getContext('2d');
+        const uiCtx = uiCanvas.getContext('2d');
+        
+        // Input elements
+        const textInput = document.getElementById('textInput');
+        const endGameBtn = document.getElementById('endGameBtn');
+        const backBtn = document.getElementById('backBtn');
+        
+        // Game state
+        const state = {
+            mode: 'apikey', // apikey, menu, game, gallery, viewing
+            userFear: '',
+            isFirstRun: true,
+            messages: [],
+            currentResponse: '',
+            displayedText: '',
+            isStreaming: false,
+            
+            // Image parameters
+            imageSeed: Math.random() * 100000,
+            noiseScale: 0.01,
+            distortion: 0.0,
+            darkness: 0.0,
+            
+            // Visual effects
+            glitchTimer: 0,
+            glitchActive: false,
+            vignettePulse: 0,
+            particles: [],
+            
+            // Gallery
+            dreamList: [],
+            selectedDream: null,
+            
+            // Animation
+            cursorVisible: true,
+            cursorTimer: 0
+        };
+        
+        // Initialize particles
+        function initParticles() {
+            state.particles = [];
+            for (let i = 0; i < 30; i++) {
+                state.particles.push({
+                    x: Math.random() * 800,
+                    y: Math.random() * 400,
+                    size: Math.random() * 2 + 1,
+                    speed: Math.random() * 0.8 + 0.2,
+                    alpha: Math.random() * 70 + 30
+                });
+            }
+        }
+        
+        // Perlin noise implementation (simplified)
+        function noise(x, y) {
+            const X = Math.floor(x) & 255;
+            const Y = Math.floor(y) & 255;
+            x -= Math.floor(x);
+            y -= Math.floor(y);
+            const u = fade(x);
+            const v = fade(y);
+            const a = (X + Y * 57) * 0.1;
+            return lerp(v, lerp(u, grad(a, x, y), grad(a + 1, x - 1, y)),
+                           lerp(u, grad(a + 57, x, y - 1), grad(a + 58, x - 1, y - 1)));
+        }
+        
+        function fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+        function lerp(t, a, b) { return a + t * (b - a); }
+        function grad(hash, x, y) {
+            const h = hash & 3;
+            return ((h & 1) === 0 ? x : -x) + ((h & 2) === 0 ? y : -y);
+        }
+        
+        // Generate nightmare image
+        function generateNightmareImage() {
+            const { imageSeed, noiseScale, distortion, darkness } = state;
+            
+            // Background
+            imgCtx.fillStyle = '#000';
+            imgCtx.fillRect(0, 0, 800, 400);
+            
+            // Noise-based background
+            const imageData = imgCtx.createImageData(800, 400);
+            const data = imageData.data;
+            
+            for (let x = 0; x < 800; x += 4) {
+                for (let y = 0; y < 400; y += 4) {
+                    const warpX = x + noise(x * 0.01, y * 0.01) * 50 * distortion;
+                    const warpY = y + noise(x * 0.01 + 100, y * 0.01) * 50 * distortion;
+                    const noiseVal = (noise(warpX * noiseScale, warpY * noiseScale) + 1) / 2;
+                    
+                    const r = noiseVal * (120 * (1 - darkness)) + 20 * (1 - darkness);
+                    const g = noiseVal * (80 * (1 - darkness)) + 10 * (1 - darkness);
+                    const b = noiseVal * (100 * (1 - darkness)) + 30 * (1 - darkness);
+                    
+                    imgCtx.fillStyle = `rgb(${r},${g},${b})`;
+                    imgCtx.fillRect(x, y, 4, 4);
+                }
+            }
+            
+            // Organic shapes
+            const numShapes = Math.floor(5 + distortion * 10);
+            for (let i = 0; i < numShapes; i++) {
+                const x = Math.random() * 800;
+                const y = Math.random() * 400;
+                const size = Math.random() * 150 + 50;
+                
+                imgCtx.beginPath();
+                imgCtx.strokeStyle = `rgba(${100 + Math.random() * 50},${50 + Math.random() * 50},${80 + Math.random() * 50},0.3)`;
+                imgCtx.lineWidth = 2;
+                
+                for (let angle = 0; angle < 360; angle += 10) {
+                    const rad = angle * Math.PI / 180;
+                    const noiseOffset = noise(angle * 0.1, i) * 30 * distortion;
+                    const r = size + noiseOffset;
+                    const px = x + Math.cos(rad) * r;
+                    const py = y + Math.sin(rad) * r;
+                    if (angle === 0) imgCtx.moveTo(px, py);
+                    else imgCtx.lineTo(px, py);
+                }
+                imgCtx.closePath();
+                imgCtx.stroke();
+            }
+            
+            // Vignette
+            const gradient = imgCtx.createRadialGradient(400, 200, 50, 400, 200, 500);
+            gradient.addColorStop(0, 'rgba(0,0,0,0)');
+            gradient.addColorStop(1, `rgba(0,0,0,${0.3 + darkness * 0.5})`);
+            imgCtx.fillStyle = gradient;
+            imgCtx.fillRect(0, 0, 800, 400);
+        }
+        
+        // Apply visual effects
+        function applyVisualEffects() {
+            // Particles
+            const numParticles = Math.min(Math.floor(10 + state.distortion * 20), state.particles.length);
+            for (let i = 0; i < numParticles; i++) {
+                const p = state.particles[i];
+                imgCtx.fillStyle = `rgba(200,200,200,${p.alpha / 255})`;
+                imgCtx.beginPath();
+                imgCtx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                imgCtx.fill();
+            }
+            
+            // Film grain
+            const grainIntensity = 10 + state.darkness * 20;
+            for (let i = 0; i < 100; i++) {
+                const x = Math.random() * 800;
+                const y = Math.random() * 400;
+                const brightness = Math.random() * 255;
+                imgCtx.fillStyle = `rgba(${brightness},${brightness},${brightness},${Math.random() * grainIntensity / 255})`;
+                imgCtx.fillRect(x, y, 2, 2);
+            }
+            
+            // Scanlines
+            imgCtx.strokeStyle = 'rgba(0,0,0,0.12)';
+            imgCtx.lineWidth = 1;
+            for (let y = 0; y < 400; y += 4) {
+                imgCtx.beginPath();
+                imgCtx.moveTo(0, y);
+                imgCtx.lineTo(800, y);
+                imgCtx.stroke();
+            }
+        }
+        
+        // Update effects
+        function updateEffects() {
+            state.vignettePulse += 0.02 + state.darkness * 0.03;
+            
+            state.particles.forEach(p => {
+                p.y += p.speed;
+                p.x += Math.sin(p.y * 0.01) * 0.5;
+                if (p.y > 400) {
+                    p.y = 0;
+                    p.x = Math.random() * 800;
+                }
+                if (p.x < 0) p.x = 800;
+                if (p.x > 800) p.x = 0;
+            });
+            
+            state.cursorTimer++;
+            if (state.cursorTimer > 15) {
+                state.cursorVisible = !state.cursorVisible;
+                state.cursorTimer = 0;
+            }
+        }
+        
+        // Draw UI based on mode
+        function drawUI() {
+            uiCtx.clearRect(0, 0, 800, 500);
+            uiCtx.fillStyle = 'rgba(15,15,20,0.9)';
+            uiCtx.fillRect(0, 0, 800, 500);
+            
+            switch (state.mode) {
+                case 'apikey': drawApiKey(); break;
+                case 'menu': drawMenu(); break;
+                case 'game': drawGame(); break;
+                case 'gallery': drawGallery(); break;
+                case 'viewing': drawViewing(); break;
+            }
+        }
+        
+        function drawApiKey() {
+            uiCtx.fillStyle = '#c83232';
+            uiCtx.font = 'bold 24px Courier New';
+            uiCtx.textAlign = 'center';
+            uiCtx.fillText('NIGHTMARE GENERATOR', 400, 50);
+            
+            uiCtx.fillStyle = '#969696';
+            uiCtx.font = '14px Courier New';
+            uiCtx.fillText('~ Configuration Required ~', 400, 80);
+            
+            uiCtx.fillStyle = '#dcdcdc';
+            uiCtx.font = '13px Courier New';
+            uiCtx.fillText('Enter your OpenAI API key to begin', 400, 140);
+            
+            uiCtx.fillStyle = '#b45050';
+            uiCtx.font = '12px Courier New';
+            uiCtx.fillText('Get your key at: platform.openai.com/api-keys', 400, 170);
+            
+            uiCtx.fillStyle = '#787878';
+            uiCtx.font = '11px Courier New';
+            uiCtx.fillText('Your key is stored locally and never shared', 400, 200);
+            uiCtx.fillText('Press ENTER to continue once entered', 400, 450);
+            
+            textInput.classList.remove('hidden');
+            textInput.style.bottom = '250px';
+            textInput.placeholder = 'Paste your OpenAI API key here...';
+            textInput.type = 'password';
+            endGameBtn.classList.add('hidden');
+            backBtn.classList.add('hidden');
+            
+            setTimeout(() => textInput.focus(), 100);
+        }
+        
+        function drawMenu() {
+            uiCtx.fillStyle = '#c83232';
+            uiCtx.font = 'bold 24px Courier New';
+            uiCtx.textAlign = 'center';
+            uiCtx.fillText('NIGHTMARE GENERATOR', 400, 50);
+            
+            uiCtx.fillStyle = '#969696';
+            uiCtx.font = '14px Courier New';
+            uiCtx.fillText('~ Where fears become reality ~', 400, 80);
+            
+            uiCtx.fillStyle = '#dcdcdc';
+            uiCtx.font = '16px Courier New';
+            uiCtx.fillText('1. Start Your Nightmare', 400, 140);
+            
+            uiCtx.fillStyle = '#b45050';
+            uiCtx.fillText('2. Peek Into Others\' Dreams', 400, 180);
+            
+            uiCtx.fillStyle = '#787878';
+            uiCtx.font = '12px Courier New';
+            uiCtx.fillText('Press 1 or 2 to select', 400, 450);
+            
+            textInput.classList.add('hidden');
+            endGameBtn.classList.add('hidden');
+            backBtn.classList.add('hidden');
+        }
+        
+        function drawGame() {
+            uiCtx.fillStyle = '#c83232';
+            uiCtx.font = 'bold 18px Courier New';
+            uiCtx.textAlign = 'center';
+            uiCtx.fillText('NIGHTMARE GENERATOR', 400, 30);
+            
+            if (state.isFirstRun) {
+                uiCtx.fillStyle = '#b4b4b4';
+                uiCtx.font = '14px Courier New';
+                uiCtx.fillText('What is your worst fear?', 400, 60);
+            } else if (state.isStreaming) {
+                uiCtx.fillStyle = '#b46464';
+                uiCtx.font = '12px Courier New';
+                const dots = '.'.repeat((Date.now() / 300 | 0) % 4);
+                uiCtx.fillText(`[Generating${dots}]`, 400, 55);
+            }
+            
+            // Display streamed text
+            if (state.displayedText) {
+                uiCtx.fillStyle = '#dcdcdc';
+                uiCtx.font = '13px Courier New';
+                uiCtx.textAlign = 'left';
+                
+                const words = state.displayedText.split(' ');
+                const lines = [];
+                let currentLine = '';
+                const maxWidth = 760;
+                
+                words.forEach(word => {
+                    const testLine = currentLine + word + ' ';
+                    const metrics = uiCtx.measureText(testLine);
+                    if (metrics.width < maxWidth) {
+                        currentLine = testLine;
+                    } else {
+                        lines.push(currentLine);
+                        currentLine = word + ' ';
+                    }
+                });
+                lines.push(currentLine);
+                
+                let y = 90;
+                lines.forEach(line => {
+                    uiCtx.fillText(line, 20, y);
+                    y += 20;
+                });
+            }
+            
+            textInput.classList.remove('hidden');
+            textInput.style.bottom = '90px';
+            endGameBtn.classList.remove('hidden');
+            backBtn.classList.add('hidden');
+        }
+        
+        function drawGallery() {
+            uiCtx.fillStyle = '#b45050';
+            uiCtx.font = 'bold 20px Courier New';
+            uiCtx.textAlign = 'center';
+            uiCtx.fillText('PEEK INTO OTHERS\' DREAMS', 400, 30);
+            
+            uiCtx.fillStyle = '#787878';
+            uiCtx.font = '12px Courier New';
+            uiCtx.fillText('~ witness their fears ~', 400, 55);
+            
+            loadDreams();
+            
+            if (state.dreamList.length === 0) {
+                uiCtx.fillStyle = '#969696';
+                uiCtx.font = '14px Courier New';
+                uiCtx.fillText('No dreams collected yet...', 400, 150);
+                uiCtx.fillText('Be the first to share your nightmare', 400, 175);
+            } else {
+                uiCtx.textAlign = 'left';
+                uiCtx.font = '13px Courier New';
+                let y = 90;
+                
+                state.dreamList.slice(0, 9).forEach((dream, i) => {
+                    uiCtx.fillStyle = '#c83232';
+                    uiCtx.fillText(`${i + 1}. `, 30, y);
+                    
+                    uiCtx.fillStyle = '#dcdcdc';
+                    uiCtx.fillText(`Fear: ${dream.fear.substring(0, 40)}`, 55, y);
+                    
+                    uiCtx.fillStyle = '#787878';
+                    uiCtx.font = '11px Courier New';
+                    uiCtx.fillText(`   ${dream.date.substring(0, 16)}`, 55, y + 15);
+                    
+                    uiCtx.font = '13px Courier New';
+                    y += 45;
+                });
+            }
+            
+            uiCtx.fillStyle = '#787878';
+            uiCtx.font = '12px Courier New';
+            uiCtx.textAlign = 'center';
+            uiCtx.fillText('Press 1-9 to select a dream', 400, 450);
+            
+            textInput.classList.add('hidden');
+            endGameBtn.classList.add('hidden');
+            backBtn.classList.remove('hidden');
+            backBtn.textContent = 'Back to Menu';
+        }
+        
+        function drawViewing() {
+            if (!state.selectedDream) return;
+            
+            uiCtx.fillStyle = '#b45050';
+            uiCtx.font = '16px Courier New';
+            uiCtx.textAlign = 'center';
+            uiCtx.fillText(`Fear: ${state.selectedDream.fear}`, 400, 25);
+            
+            uiCtx.fillStyle = '#646464';
+            uiCtx.font = '11px Courier New';
+            uiCtx.fillText(state.selectedDream.date, 400, 45);
+            
+            // Display story
+            uiCtx.fillStyle = '#dcdcdc';
+            uiCtx.font = '12px Courier New';
+            uiCtx.textAlign = 'left';
+            
+            const text = state.selectedDream.content;
+            const words = text.split(' ');
+            const lines = [];
+            let currentLine = '';
+            const maxWidth = 760;
+            
+            words.forEach(word => {
+                const testLine = currentLine + word + ' ';
+                const metrics = uiCtx.measureText(testLine);
+                if (metrics.width < maxWidth) {
+                    currentLine = testLine;
+                } else {
+                    lines.push(currentLine);
+                    currentLine = word + ' ';
+                }
+            });
+            lines.push(currentLine);
+            
+            let y = 70;
+            lines.slice(0, 20).forEach(line => {
+                uiCtx.fillText(line, 20, y);
+                y += 18;
+            });
+            
+            textInput.classList.add('hidden');
+            endGameBtn.classList.add('hidden');
+            backBtn.classList.remove('hidden');
+            backBtn.textContent = 'Back to Gallery';
+        }
+        
+        // OpenAI API call with streaming
+        async function streamResponse() {
+            state.isStreaming = true;
+            state.displayedText = '';
+            
+            try {
+                const response = await fetch('https://api.openai.com/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${OPENAI_API_KEY}`
+                    },
+                    body: JSON.stringify({
+                        model: MODEL,
+                        messages: state.messages,
+                        max_tokens: MAX_TOKENS,
+                        frequency_penalty: 0.5,
+                        stream: true
+                    })
+                });
+                
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n').filter(line => line.trim() !== '');
+                    
+                    for (const line of lines) {
+                        if (line.includes('[DONE]')) break;
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const json = JSON.parse(line.substring(6));
+                                const content = json.choices[0]?.delta?.content;
+                                if (content) {
+                                    state.displayedText += content;
+                                }
+                            } catch (e) {}
+                        }
+                    }
+                }
+                
+                state.currentResponse = state.displayedText;
+                state.messages.push({ role: 'assistant', content: state.currentResponse });
+                updateImageParameters();
+                saveDream();
+                
+            } catch (error) {
+                console.error('API Error:', error);
+                state.displayedText = 'An eerie silence fills the air...';
+                state.currentResponse = state.displayedText;
+            }
+            
+            state.isStreaming = false;
+        }
+        
+        function updateImageParameters() {
+            const lower = state.currentResponse.toLowerCase();
+            state.imageSeed = Math.random() * 100000;
+            state.darkness = 0.3;
+            state.distortion = 0.0;
+            
+            if (/dark|shadow|night|black/.test(lower)) state.darkness += 0.2;
+            if (/death|dead|corpse|blood/.test(lower)) {
+                state.darkness += 0.15;
+                state.distortion += 0.3;
+            }
+            if (/strange|weird|distorted|twisted/.test(lower)) state.distortion += 0.2;
+            if (/fear|terror|horror|afraid/.test(lower)) {
+                state.distortion += 0.15;
+                state.darkness += 0.1;
+            }
+            
+            state.darkness = Math.min(0.8, state.darkness);
+            state.distortion = Math.min(1.0, state.distortion);
+            state.noiseScale = Math.random() * 0.015 + 0.005;
+        }
+        
+        // Process user input
+        function processInput() {
+            const input = textInput.value.trim();
+            if (!input || state.isStreaming) return;
+            
+            // Handle API key entry
+            if (state.mode === 'apikey') {
+                OPENAI_API_KEY = input;
+                localStorage.setItem('openai_api_key', input);
+                textInput.value = '';
+                textInput.type = 'text';
+                textInput.placeholder = 'Type here...';
+                state.mode = 'menu';
+                return;
+            }
+            
+            if (input.toLowerCase() === 'quit') {
+                endGame();
+                return;
+            }
+            
+            if (state.isFirstRun) {
+                state.userFear = input;
+                state.messages = [
+                    { role: 'system', content: `You are a Dungeon Master for a horror-themed role-playing game. Keep your responses to 100 words or fewer. Note that the player's worst fear is ${state.userFear}` },
+                    { role: 'user', content: OPENING_PROMPT }
+                ];
+                state.isFirstRun = false;
+            } else {
+                state.messages.push({ role: 'user', content: input });
+            }
+            
+            textInput.value = '';
+            streamResponse();
+        }
+        
+        // Save dream to localStorage
+        function saveDream() {
+            if (!state.userFear || !state.currentResponse) return;
+            
+            const dreams = JSON.parse(localStorage.getItem('nightmares') || '[]');
+            const timestamp = new Date();
+            
+            dreams.unshift({
+                fear: state.userFear,
+                date: timestamp.toLocaleString(),
+                content: state.messages.map(m => m.role === 'user' ? '> ' + m.content : m.content).join('\n\n')
+            });
+            
+            localStorage.setItem('nightmares', JSON.stringify(dreams.slice(0, 50)));
+        }
+        
+        function loadDreams() {
+            state.dreamList = JSON.parse(localStorage.getItem('nightmares') || '[]');
+        }
+        
+        function endGame() {
+            saveDream();
+            state.mode = 'menu';
+            state.isFirstRun = true;
+            state.messages = [];
+            state.displayedText = '';
+            state.currentResponse = '';
+            state.userFear = '';
+            textInput.value = '';
+        }
+        
+        // Event handlers
+        textInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                processInput();
+            }
+        });
+        
+        endGameBtn.addEventListener('click', endGame);
+        
+        backBtn.addEventListener('click', () => {
+            if (state.mode === 'gallery') {
+                state.mode = 'menu';
+            } else if (state.mode === 'viewing') {
+                state.mode = 'gallery';
+            }
+        });
+        
+        // Animation loop
+        function animate() {
+            generateNightmareImage();
+            applyVisualEffects();
+            updateEffects();
+            drawUI();
+            requestAnimationFrame(animate);
+        }
+        
+        // Audio System - Silent Hill 2 style atmospheric soundtrack
+        class AmbientSoundscape {
+            constructor() {
+                this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                this.masterGain = this.audioContext.createGain();
+                this.masterGain.gain.value = 0.3;
+                this.masterGain.connect(this.audioContext.destination);
+                
+                this.isPlaying = false;
+                this.oscillators = [];
+                this.noiseNode = null;
+                this.initialized = false;
+            }
+            
+            init() {
+                if (this.initialized) return;
+                // Resume audio context on user interaction
+                if (this.audioContext.state === 'suspended') {
+                    this.audioContext.resume();
+                }
+                this.initialized = true;
+            }
+            
+            createDrone(frequency, detune = 0) {
+                const osc = this.audioContext.createOscillator();
+                const gain = this.audioContext.createGain();
+                const filter = this.audioContext.createBiquadFilter();
+                
+                osc.type = 'sine';
+                osc.frequency.value = frequency;
+                osc.detune.value = detune;
+                
+                filter.type = 'lowpass';
+                filter.frequency.value = 400;
+                filter.Q.value = 1;
+                
+                gain.gain.value = 0;
+                
+                osc.connect(filter);
+                filter.connect(gain);
+                gain.connect(this.masterGain);
+                
+                osc.start();
+                
+                // Fade in
+                gain.gain.linearRampToValueAtTime(0.15, this.audioContext.currentTime + 2);
+                
+                // Add subtle LFO modulation
+                const lfo = this.audioContext.createOscillator();
+                const lfoGain = this.audioContext.createGain();
+                lfo.frequency.value = 0.1 + Math.random() * 0.2;
+                lfoGain.gain.value = 5;
+                lfo.connect(lfoGain);
+                lfoGain.connect(osc.detune);
+                lfo.start();
+                
+                return { osc, gain, lfo };
+            }
+            
+            createNoise() {
+                const bufferSize = 2 * this.audioContext.sampleRate;
+                const noiseBuffer = this.audioContext.createBuffer(1, bufferSize, this.audioContext.sampleRate);
+                const output = noiseBuffer.getChannelData(0);
+                
+                for (let i = 0; i < bufferSize; i++) {
+                    output[i] = Math.random() * 2 - 1;
+                }
+                
+                const noise = this.audioContext.createBufferSource();
+                noise.buffer = noiseBuffer;
+                noise.loop = true;
+                
+                const noiseFilter = this.audioContext.createBiquadFilter();
+                noiseFilter.type = 'bandpass';
+                noiseFilter.frequency.value = 1000;
+                noiseFilter.Q.value = 0.5;
+                
+                const noiseGain = this.audioContext.createGain();
+                noiseGain.gain.value = 0.05;
+                
+                noise.connect(noiseFilter);
+                noiseFilter.connect(noiseGain);
+                noiseGain.connect(this.masterGain);
+                
+                return { noise, noiseGain, noiseFilter };
+            }
+            
+            createDistortedTone() {
+                const osc = this.audioContext.createOscillator();
+                const gain = this.audioContext.createGain();
+                const distortion = this.audioContext.createWaveShaper();
+                
+                // Create distortion curve
+                const curve = new Float32Array(256);
+                for (let i = 0; i < 256; i++) {
+                    const x = (i - 128) / 128;
+                    curve[i] = Math.tanh(x * 3);
+                }
+                distortion.curve = curve;
+                
+                osc.type = 'sawtooth';
+                osc.frequency.value = 80 + Math.random() * 40;
+                gain.gain.value = 0;
+                
+                osc.connect(distortion);
+                distortion.connect(gain);
+                gain.connect(this.masterGain);
+                
+                osc.start();
+                gain.gain.linearRampToValueAtTime(0.08, this.audioContext.currentTime + 1);
+                
+                // Random frequency changes
+                setInterval(() => {
+                    if (this.isPlaying) {
+                        const newFreq = 80 + Math.random() * 40;
+                        osc.frequency.linearRampToValueAtTime(newFreq, this.audioContext.currentTime + 5);
+                    }
+                }, 10000);
+                
+                return { osc, gain };
+            }
+            
+            startAmbience() {
+                if (this.isPlaying) return;
+                this.init();
+                this.isPlaying = true;
+                
+                // Deep drones
+                this.oscillators.push(this.createDrone(55, -10));  // A1
+                this.oscillators.push(this.createDrone(82.4, 5));   // E2
+                this.oscillators.push(this.createDrone(110, -5));   // A2
+                
+                // Static/noise layer
+                this.noiseNode = this.createNoise();
+                this.noiseNode.noise.start();
+                
+                // Occasional distorted tone
+                setTimeout(() => {
+                    if (this.isPlaying) {
+                        this.oscillators.push(this.createDistortedTone());
+                    }
+                }, 3000);
+            }
+            
+            intensifyForStreaming() {
+                if (!this.isPlaying) return;
+                
+                // Increase tension during AI generation
+                this.oscillators.forEach(({gain}) => {
+                    if (gain) {
+                        gain.gain.linearRampToValueAtTime(0.25, this.audioContext.currentTime + 1);
+                    }
+                });
+                
+                if (this.noiseNode) {
+                    this.noiseNode.noiseGain.gain.linearRampToValueAtTime(0.12, this.audioContext.currentTime + 1);
+                    this.noiseNode.noiseFilter.frequency.linearRampToValueAtTime(2000, this.audioContext.currentTime + 1);
+                }
+            }
+            
+            normalizeIntensity() {
+                if (!this.isPlaying) return;
+                
+                this.oscillators.forEach(({gain}) => {
+                    if (gain) {
+                        gain.gain.linearRampToValueAtTime(0.15, this.audioContext.currentTime + 2);
+                    }
+                });
+                
+                if (this.noiseNode) {
+                    this.noiseNode.noiseGain.gain.linearRampToValueAtTime(0.05, this.audioContext.currentTime + 2);
+                    this.noiseNode.noiseFilter.frequency.linearRampToValueAtTime(1000, this.audioContext.currentTime + 2);
+                }
+            }
+            
+            stop() {
+                this.isPlaying = false;
+                
+                // Fade out all oscillators
+                this.oscillators.forEach(({osc, gain, lfo}) => {
+                    if (gain) {
+                        gain.gain.linearRampToValueAtTime(0, this.audioContext.currentTime + 2);
+                    }
+                    setTimeout(() => {
+                        if (osc) osc.stop();
+                        if (lfo) lfo.stop();
+                    }, 2100);
+                });
+                
+                if (this.noiseNode) {
+                    this.noiseNode.noiseGain.gain.linearRampToValueAtTime(0, this.audioContext.currentTime + 2);
+                    setTimeout(() => {
+                        if (this.noiseNode.noise) this.noiseNode.noise.stop();
+                    }, 2100);
+                }
+                
+                this.oscillators = [];
+                this.noiseNode = null;
+            }
+        }
+        
+        const ambientSound = new AmbientSoundscape();
+        
+        // Modified streamResponse to control audio
+        const originalStreamResponse = streamResponse;
+        streamResponse = async function() {
+            ambientSound.intensifyForStreaming();
+            await originalStreamResponse();
+            ambientSound.normalizeIntensity();
+        };
+        
+        // Start audio when entering game mode
+        document.addEventListener('keydown', (e) => {
+            if (state.mode === 'menu') {
+                if (e.key === '1') {
+                    state.mode = 'game';
+                    ambientSound.startAmbience();
+                    setTimeout(() => textInput.focus(), 100);
+                } else if (e.key === '2') {
+                    state.mode = 'gallery';
+                }
+            } else if (state.mode === 'gallery') {
+                const num = parseInt(e.key);
+                if (num >= 1 && num <= 9 && num <= state.dreamList.length) {
+                    state.selectedDream = state.dreamList[num - 1];
+                    state.mode = 'viewing';
+                }
+            }
+        });
+        
+        // Stop audio when ending game
+        const originalEndGame = endGame;
+        endGame = function() {
+            ambientSound.stop();
+            originalEndGame();
+        };
+        
+        // Sound toggle button
+        const soundToggle = document.getElementById('soundToggle');
+        let isMuted = false;
+        
+        soundToggle.addEventListener('click', () => {
+            isMuted = !isMuted;
+            
+            if (isMuted) {
+                ambientSound.masterGain.gain.linearRampToValueAtTime(0, ambientSound.audioContext.currentTime + 0.5);
+                soundToggle.textContent = '🔇';
+                soundToggle.classList.add('muted');
+            } else {
+                ambientSound.masterGain.gain.linearRampToValueAtTime(0.3, ambientSound.audioContext.currentTime + 0.5);
+                soundToggle.textContent = '🔊';
+                soundToggle.classList.remove('muted');
+            }
+        });
+        
+        // Check for saved API key on startup
+        const savedKey = localStorage.getItem('openai_api_key');
+        if (savedKey) {
+            OPENAI_API_KEY = savedKey;
+            state.mode = 'menu';
+        }
+        
+        // Initialize
+        initParticles();
+        animate();
+    </script>
+</body>
+</html>
